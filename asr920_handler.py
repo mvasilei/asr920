@@ -1,5 +1,5 @@
 #! /usr/bin/env python
-import time, signal, sys, subprocess, datetime
+import time, signal, sys, subprocess, datetime, getpass, paramiko
 import multiprocessing as mp
 from optparse import OptionParser
 from itertools import izip_longest
@@ -11,6 +11,42 @@ def signal_handler(sig, frame):
 def grouper(iterable, n, fillvalue=None):
    args = [iter(iterable)] * n
    return izip_longest(*args, fillvalue=fillvalue)
+
+def connection_establishment(USER, PASS, host):
+   try:
+      print('Processing HOST: ' + host)
+      client = paramiko.SSHClient()
+      client.load_system_host_keys()
+      client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+      client.connect(host, 22, username=USER, password=PASS)
+      channel = client.invoke_shell()
+      while not channel.recv_ready():
+         time.sleep(1)
+
+      channel.recv(65535)
+      channel.send('term len 0\n')
+   except paramiko.AuthenticationException as error:
+      print ('Authentication Error')
+      exit()
+
+   return (channel, client)
+
+def get_user_password():
+   USER = raw_input("Username:")
+   PASS = getpass.getpass(prompt='Enter User password: ')
+   return USER, PASS
+
+
+def execute_command(command, channel, wait):
+   channel.send(command)
+   while not channel.recv_ready():
+      time.sleep(1)
+
+   out = channel.recv(65535)
+   return (out)
+
+def connection_teardown(client):
+   client.close()
 
 def send_command(host, command, result_queue):
    response = subprocess.Popen(['runcmd ' + host + ' "' + command +'"'],
@@ -24,7 +60,6 @@ def send_command(host, command, result_queue):
 
 def multi_send_command(hosts_list, command, timestamp, check_type):
    pool = []
-   count = 0
    result_queue = mp.Queue()
 
    for host in hosts_list:
@@ -32,7 +67,6 @@ def multi_send_command(hosts_list, command, timestamp, check_type):
 
    for prc in pool:
       prc.start()
-      count += 1
 
    for prc in pool:
       prc.join()
@@ -53,11 +87,14 @@ def run_checks(host_list, check_type):
    for cmd in commands:
       multi_send_command(host_list, cmd, timestamp, check_type)
 
-def run_os_command(host, command, result_queue):
+def run_os_command(host, command, result_queue=None):
    response = subprocess.Popen([command], stdout=subprocess.PIPE, shell=True)
 
    if response.returncode == None:
-      result_queue.put({host:response.communicate()[0]})
+      if result_queue != None:
+         result_queue.put({host:response.communicate()[0]})
+      else:
+         return {host: response.communicate()[0]}
    else:
       print('An error occurred', response.returncode)
 
@@ -94,32 +131,97 @@ def multi_ping(hosts_list, unreachable):
 
    return reachable_hosts, unreachable
 
-def file_upload(hosts_list):
+def wait_till_up(host):
+   isup = False
+   print('Pausing for 5 minutes for host ' + host + 'reload')
+   time.sleep(300)
+   for i in range(2):
+      print('Checking device ' + host)
+      out = run_os_command(host, 'ping ' + host + ' 2')
+      if 'alive' not in out:
+         print('Waiting for' + host + ' to respond for 2 more minutes')
+      else:
+         isup = True
+         pass
+
+   return isup
+
+def upgrade(user, password, host):
+   failed_hosts = []
+   user, password = get_user_password()
+   erros = ['Invalid','Incomplete','Ambiguous']
+   channel, client = connection_establishment(user, password, host)
+   out = execute_command('show run | i boot system', channel, 1)
+   execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all', channel, 1)
+   execute_command('conf t\n', channel, 1)
+   execute_command('boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel, 1)
+   execute_command('copy run start\n\n', channel, 3)
+   execute_command('reload\n\n', channel, 1)
+   connection_teardown(client)
+
+   isup = wait_till_up(host)
+   if isup == False:
+      print(host + ' didn''t recover for over 9 minutes, aborting process')
+      return failed_hosts.append(host)
+      pass
+   else:
+      channel, client = connection_establishment(user, password, host)
+      out = execute_command('show version | include [0-9][0-9]\\.+[0-9].+[a-z,A-Z]', channel, 1)
+      if '17.03.03' in out:
+         print(host + ' host upgraded successfully')
+
+def multi_upgrade(user, password, hosts_list, file_list):
    pool = []
-   count = 0
-   result_queue = mp.Queue()
+   failed = []
+   #result_queue = mp.Queue()
 
    for host in hosts_list:
-      command = 'sshpass -p \'yourpassword\' ssh -o StrictHostKeyChecking=no yourusername@' + host
-      pool.append(mp.Process(target=run_os_command, args=(host.strip('\n'), command, result_queue)))
+      pool.append(mp.Process(target=upgrade, args=(user, password, host)))
 
    for prc in pool:
-      print ('Starting file transfer on host ' + hosts_list[count])
       prc.start()
-      count += 1
 
    for prc in pool:
       prc.join()
 
+   return failed
+
+def progress(filename, size, sent):
+   sys.stdout.write("%s's upload progress: %.2f%%   \r" % (filename, float(sent) / float(size) * 100))
+
+def file_upload(host, file):
+   failed = []
+   user, password = get_user_password()
+   try:
+      client = paramiko.SSHClient()
+      client.load_system_host_keys()
+      client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+      client.connect(host, 22, username=user, password=password)
+   except paramiko.AuthenticationException as error:
+      print ('Authentication Error on host ' + host + '\n' + error)
+      return failed.append(host)
+
+   scp_client = SCPClient(client.get_transport(),progress=progress)
+   scp_client.put('venv/bin/python', 'bootflash:/python')
+   scp_client.close
+   return failed
+
+def multi_file_upload(hosts_list):
+   pool = []
+   for host in hosts_list:
+      pool.append(mp.Process(target=file_upload, args=(host)))
+
    for prc in pool:
-      dict = result_queue.get()
-      for key in dict:
-         print dict[key]
+      prc.start()
 
+   for prc in pool:
+      prc.join()
 
+   #return failed
 
 def main():
    unreachable = []
+   upload_failed = []
    usage = 'usage: %prog [options] arg'
    parser = OptionParser(usage)
    parser.add_option('-c', '--prechecks', action='store_true', dest='prechecks',
@@ -160,7 +262,8 @@ def main():
          except IOError as e:
             print(e)
       else:
-         pass
+         reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
+         run_checks(reachable_hosts, 'PRE')
    if options.postchecks:
       if options.filename:
          try:
@@ -171,7 +274,8 @@ def main():
          except IOError as e:
             print(e)
       else:
-         pass
+         reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
+         run_checks(reachable_hosts, 'POST')
    if options.upgrade:
       if options.filename:
          try:
@@ -187,15 +291,20 @@ def main():
       if options.filename:
          try:
             with open(options.filename, 'r') as infile:
-               for lines in grouper(infile, mp.cpu_count()/4, ''):
+               for lines in grouper(infile, mp.cpu_count()/8, ''):
                   reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                  file_upload(reachable_hosts)
+                  #upload_failed = file_upload(reachable_hosts)
          except IOError as e:
             print(e)
       else:
-         pass
+         reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
+         upload_failed = file_upload(reachable_hosts)
 
-   print('The following hosts could not be reached: ' + str(unreachable))
+   if len(unreachable)>0:
+      print('The following hosts could not be reached: ' + str(unreachable))
+   if len(upload_failed)>0:
+      print('File upload failed on: ' + str(upload_failed))
+
 
 if __name__ == '__main__':
    signal.signal(signal.SIGINT, signal_handler)  # catch ctrl-c and call handler to terminate the script
