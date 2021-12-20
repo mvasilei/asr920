@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python2.7
 import time, signal, sys, subprocess, datetime, getpass, paramiko, os, re
 import hashlib
 import multiprocessing as mp
@@ -22,11 +22,13 @@ def connection_establishment(USER, PASS, host):
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(host, 22, username=USER, password=PASS)
         channel = client.invoke_shell()
+        channel.send('enable\n')
+        channel.send(PASS + '\n')
         channel.send('term len 0\n')
         while not channel.recv_ready():
-            time.sleep(1)
+           time.sleep(1)
 
-        channel.recv(65535)
+        output = channel.recv(1024)
     except paramiko.AuthenticationException as error:
         print ('Authentication Error on host: ' + host)
         return (None, None)
@@ -39,90 +41,94 @@ def get_user_password():
     return USER, PASS
 
 def execute_command(command, channel):
-    channel.send(command)
-    interval = 0.1
-    maxseconds = 10
-    maxcount = maxseconds / interval
-    bufsize = 1024
+    rcv_timeout = 10
+    interval_length = 0.1
+    cbuffer = []
+    data = ''
 
-    # Poll until completion or timeout
-    # Note that we cannot directly use the stdout file descriptor
-    # because it stalls at 64K bytes (65536).
-    input_idx = 0
-    timeout_flag = False
-    start = datetime.datetime.now()
-    start_secs = time.mktime(start.timetuple())
-    output = ''
-    channel.setblocking(0)
+    channel.send(command)
     while True:
         if channel.recv_ready():
-            data = channel.recv(bufsize).decode('ascii')
-            output += data
+            data = channel.recv(1000)
+            cbuffer.append(data)
 
-        if channel.exit_status_ready():
+        rcv_timeout -= interval_length
+        if rcv_timeout < 0:
             break
+        else:
+            time.sleep(interval_length)
 
-        # Timeout check
-        now = datetime.datetime.now()
-        now_secs = time.mktime(now.timetuple())
-        et_secs = now_secs - start_secs
-        if et_secs > maxseconds:
-            timeout_flag = True
+        data_no_trails =  data.strip()
+        if len(data_no_trails) > 0 and (data_no_trails[-1] == '>' or data_no_trails[-1] == '#'):
             break
-
-        rbuffer = output.rstrip(' ')
-        if len(rbuffer) > 0 and (rbuffer[-1] == '#' or rbuffer[-1] == '>'):  ## got a Cisco command prompt
-            break
-
-        time.sleep(0.200)
 
     if channel.recv_ready():
-        data = session.recv(bufsize)
-        output += data.decode('ascii')
+        data = channel.recv(1000)
+        cbuffer.append(data)
 
-    return output
+    rbuffer = ''.join(cbuffer)
+    return rbuffer
 
 def connection_teardown(client):
     client.close()
 
-def send_command(host, command, result_queue):
-    response = subprocess.Popen(['runcmd ' + host + ' "' + command +'"'],
-                                         stdout=subprocess.PIPE,
-                                         shell=True)
-
-    if response.returncode == None:
-        result_queue.put({host: {command: response.communicate()[0]}})
-    else:
-        print ('An error occurred', response.returncode)
-
-def multi_send_command(hosts_list, command, timestamp, check_type):
+def multi_send_command(hosts_list, check_type, user, password):
     pool = []
+    connection_error = []
     result_queue = mp.Queue()
 
     for host in hosts_list:
-        pool.append(mp.Process(target=send_command, args=(host.strip('\n'), command, result_queue)))
+        pool.append(mp.Process(target=run_checks, args=(host.strip('\n'), check_type, user, password, result_queue)))
 
     for prc in pool:
         prc.start()
 
     for prc in pool:
-        prc.join()
-
-    for prc in pool:
         dict = result_queue.get()
         for key in dict:
-            with open(check_type + '_' + key + '_' + timestamp + '.txt', 'a+') as outfile:
-                outfile.write(str(dict[key])+'\n')
+            if dict[key] != 'Connection':
+                with open(check_type + '_' + key + '.txt', 'a+') as outfile:
+                    outfile.write(str(dict[key]))
+            else:
+               connection_error.append(key)
 
-def run_checks(host_list, check_type):
-    commands = ['show platform',
-                    'show version']
+    return connection_error
 
-    now = datetime.datetime.now()
-    timestamp = str(now.strftime('%Y')) + str(now.strftime('%m')) + str(now.strftime('%d')) + str(now.strftime('%H'))\
-                    + str(now.strftime('%M')) + str(now.strftime('%S'))
-    for cmd in commands:
-        multi_send_command(host_list, cmd, timestamp, check_type)
+def run_checks(host, check_type, user, password,result_queue):
+    output = ''
+    commands = ['show platform\n',
+                'show version\n',
+                'show redundancy\n',
+                'show interfaces\n',
+                'show cef interface brief\n',
+                'show isis nei detail\n',
+                'show mpls interfaces\n',
+                'show ip bgp all summary\n',
+                'show ntp status\n',
+                'show ntp associations\n',
+                'show platform ptp all\n',
+                'show ptp port dataset port\n',
+                'show ptp clock dataset parent\n',
+                'show esmc detail\n',
+                'show ptp clock running\n',
+                'show network-clocks synchronization\n',
+                'show ip int brief | exc admin\n',
+                'show ip bgp vpnv4 all summary\n',
+                'show ethernet service instance\n',
+                'show xconnect all\n',
+                'show run\n',
+                'show log\n']
+
+
+    channel, client = connection_establishment(user, password, host)
+    if channel != None:
+        for cmd in commands:
+            output += execute_command(cmd, channel)
+
+        result_queue.put({host: output})
+    else:
+        result_queue.put({host: 'Connection'})
+
 
 def run_os_command(host, command, result_queue=None):
     response = subprocess.Popen([command], stdout=subprocess.PIPE, shell=True)
@@ -146,8 +152,8 @@ def multi_ping(hosts_list, unreachable):
             continue
         else:
             pool.append(mp.Process(target=run_os_command, args=(host.strip('\n'),
-                                                                                 'ping ' + host.strip('\n') + ' 2',
-                                                                                  result_queue)))
+                                                                'ping ' + host.strip('\n') + ' 2',
+                                                                result_queue)))
 
     for prc in pool:
         print('Testing reachability for host ' + hosts_list[count])
@@ -173,7 +179,7 @@ def wait_till_up(host):
     for i in range(2):
         print('Checking device ' + host)
         out = run_os_command(host, 'ping ' + host + ' -c 1')
-        if (' 0%') not in out[host]:
+        if (' 0%') not in out[host]:  #change this from ' 0%' to 'alive' when  move to bastion
             print('Waiting for ' + host + ' to respond for 2 more minutes')
             time.sleep(120)
         else:
@@ -188,11 +194,11 @@ def upgrade(user, password, host, failed_hosts):
         failed_hosts.put({host: 'Connection'})
         return None
 
-    execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all', channel)
+    execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all\n', channel)
     execute_command('conf t\n', channel)
     execute_command('boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
     execute_command('copy run start\n\n', channel)
-    execute_command('reload\n\n', channel)
+    execute_command('reload in 10\n\n', channel)
     connection_teardown(client)
 
     isup = wait_till_up(host)
@@ -233,7 +239,7 @@ def multi_upgrade(hosts_list, user, password):
             elif item[key] == 'Connection':
                 connection_error.append(key)
 
-    return failed_hosts, unrecovered_hosts
+    return failed_hosts, unrecovered_hosts, connection_error
 
 def progress(filename, size, sent):
     sys.stdout.write("%s's upload progress: %.2f%%    \r" % (filename, float(sent) / float(size) * 100))
@@ -348,6 +354,7 @@ def main():
     upload_failed = []
     upgrade_failed = []
     unrecovered = []
+    connection_error = []
 
     #create command line options menu
     usage = 'usage: %prog [options] arg'
@@ -369,7 +376,7 @@ def main():
 
     (options, args) = parser.parse_args()
 
-    #layout the rules of usage
+    #set out the rules of usage
     if options.filename and options.device:
         parser.error('Options device and filename are mutually exclusive')
     if (options.filename or options.device) and not (options.prechecks or options.postchecks or options.upload \
@@ -381,43 +388,64 @@ def main():
     if (options.upgrade or options.rollback) and (options.prechecks or options.postchecks or options.upload):
         parser.error('Options upgrade/downgrade and prechecks/postchecks/upload are mutually exclusive')
 
+    user, password = get_user_password()
+
     if options.prechecks:
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, mp.cpu_count()/4, ''):
                         reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        run_checks(reachable_hosts, 'PRE')
+                        connection_error = multi_send_command(reachable_hosts, 'PRE', user, password)
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
-            run_checks(reachable_hosts, 'PRE')
+            connection_error = multi_send_command(reachable_hosts, 'PRE', user, password)
     if options.postchecks:
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, mp.cpu_count()/4, ''):
                         reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        run_checks(reachable_hosts, 'POST')
+                        multi_send_command(reachable_hosts, 'POST', user, password)
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
-            run_checks(reachable_hosts, 'POST')
+            multi_send_command(reachable_hosts, 'POST', user, password)
     if options.upgrade:
-        user, password = get_user_password()
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, mp.cpu_count()/4, ''):
-                        reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        upgrade_failed, unrecovered = multi_upgrade(reachable_hosts, user, password)
+                    with open('temp.txt', 'w') as outfile:
+                        for line in infile:
+                            response = subprocess.Popen('csginfo ' + line.strip('\n') + ' | grep -i vodams.*_920_.*', \
+                                                  stdout=subprocess.PIPE, shell=True)
+
+                            if response.returncode == None:
+                                csginfo = response.communicate()[0]
+                                if csginfo != '':
+                                    m = re.findall('vodams_\d+_920_\d+', csginfo.lower())
+                                    current_record = list(sorted(set(result for result in m)))
+                                    outfile.write(str(current_record)+'\n')
+
+                    with open('temp.txt') as outfile:
+                        uniq = set(outfile.readlines())
+                        with open ('tmp.txt', 'w') as final:
+                           final.writelines(set(uniq))
+
+                    os.remove('temp.txt')
+                        #for lines in grouper(infile, mp.cpu_count()/4, ''):
+                        #reachable_hosts, unreachable = multi_ping(lines, unreachable)
+                        #upgrade_failed, unrecovered, connection_error = multi_upgrade(reachable_hosts, user, password)
+                #os.replace('temp.txt', options.filename)
             except IOError as e:
                 print(e)
         else:
-            reachable_hosts, unreachable = multi_ping(lines, unreachable)
-            upgrade_failed, unrecovered = multi_upgrade(reachable_hosts, user, password)
+            #reachable_hosts, unreachable = multi_ping(lines, unreachable)
+            #upgrade_failed, unrecovered = multi_upgrade(reachable_hosts, user, password)
+            pass
     if options.upload:
         user, password = get_user_password()
         if options.filename:
@@ -425,14 +453,16 @@ def main():
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, 5, ''):
                         reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
+                        #upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
-            upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
+            #upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
 
-    #print lists for hosts processed with error
+    #print lists of hosts processed with error
+    if len(connection_error)>0:
+        print('Failed to connect on the following hosts: ' + str(connection_error))
     if len(unreachable)>0:
         print('The following hosts could not be reached: ' + str(unreachable))
     if len(upload_failed)>0:
