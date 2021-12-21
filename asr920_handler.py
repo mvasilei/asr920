@@ -41,7 +41,7 @@ def get_user_password():
     return USER, PASS
 
 def execute_command(command, channel):
-    rcv_timeout = 10
+    rcv_timeout = 30
     interval_length = 0.1
     cbuffer = []
     data = ''
@@ -119,7 +119,6 @@ def run_checks(host, check_type, user, password,result_queue):
                 'show run\n',
                 'show log\n']
 
-
     channel, client = connection_establishment(user, password, host)
     if channel != None:
         for cmd in commands:
@@ -128,7 +127,7 @@ def run_checks(host, check_type, user, password,result_queue):
         result_queue.put({host: output})
     else:
         result_queue.put({host: 'Connection'})
-
+    connection_teardown(client)
 
 def run_os_command(host, command, result_queue=None):
     response = subprocess.Popen([command], stdout=subprocess.PIPE, shell=True)
@@ -152,7 +151,7 @@ def multi_ping(hosts_list, unreachable):
             continue
         else:
             pool.append(mp.Process(target=run_os_command, args=(host.strip('\n'),
-                                                                'ping ' + host.strip('\n') + ' 2',
+                                                                'ping ' + host.strip('\n') + ' -c 2',
                                                                 result_queue)))
 
     for prc in pool:
@@ -164,7 +163,7 @@ def multi_ping(hosts_list, unreachable):
         prc.join()
         item = result_queue.get()
         for key in item:
-            if 'alive' in item[key]:
+            if ' 0%' in item[key]:
                 reachable_hosts.append(key)
             else:
                 unreachable.append(key)
@@ -294,6 +293,8 @@ def file_upload(host, user, password, failed):
         failed.put({host: 'Space'})
         return None
 
+    connection_teardown(sshclient)
+
     for file in file_list:
         client, failed_connection = open_scp_channel(host, user, password, failed_connection)
 
@@ -303,45 +304,44 @@ def file_upload(host, user, password, failed):
             scp_client.put(file, 'bootflash:/' + sort_file)
             scp_client.close
 
+            sshchannel, sshclient = connection_establishment(user, password, host)
             out = execute_command('verify /md5 bootflash:/' + sort_file + '\n', sshchannel)
-            m = md5_hash.search(out)
+            connection_teardown(sshclient)
 
+            m = md5_hash.search(out)
             if m.group(0).strip() != md5[sort_file]:
                print ('Wrong md5sum for ' + sort_file + ' on host: ' + host)
                failed.put({host: 'MD5'})
-
+            else:
+                failed.put({host: 'Success'})
         else:
             failed.put({host: 'Connection'})
             scp_client.close
-
-    connection_teardown(sshclient)
 
 def multi_file_upload(hosts_list, user, password):
     pool = []
     auth_failed = []
     space_error = []
     md5_error = []
-    failed = mp.Queue()
+    mpQueue = mp.Queue()
 
     #Create pool of processes to run
     for host in hosts_list:
-        pool.append(mp.Process(target=file_upload, args=(host, user, password, failed)))
+        pool.append(mp.Process(target=file_upload, args=(host, user, password, mpQueue)))
 
     #Spawn the processes
     for prc in pool:
         prc.start()
 
-    #Join processes and get the results from the multiprocess queue
     for prc in pool:
         prc.join()
-
-        item = failed.get()
+        item = mpQueue.get()
         for key in item:
            if item[key] == 'Connection':
               auth_failed.append(key)
            elif item[key] == 'Space':
               space_error.append(key)
-           else:
+           elif item[key] == 'MD5':
               md5_error.append(key)
 
     return auth_failed, space_error, md5_error
@@ -394,7 +394,7 @@ def main():
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, mp.cpu_count()/4, ''):
+                    for lines in grouper(infile, 2, ''):
                         reachable_hosts, unreachable = multi_ping(lines, unreachable)
                         connection_error = multi_send_command(reachable_hosts, 'PRE', user, password)
             except IOError as e:
@@ -406,7 +406,7 @@ def main():
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, mp.cpu_count()/4, ''):
+                    for lines in grouper(infile, 2, ''):
                         reachable_hosts, unreachable = multi_ping(lines, unreachable)
                         multi_send_command(reachable_hosts, 'POST', user, password)
             except IOError as e:
@@ -447,18 +447,17 @@ def main():
             #upgrade_failed, unrecovered = multi_upgrade(reachable_hosts, user, password)
             pass
     if options.upload:
-        user, password = get_user_password()
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, 5, ''):
                         reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        #upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
+                        upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
-            #upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
+            upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
 
     #print lists of hosts processed with error
     if len(connection_error)>0:
