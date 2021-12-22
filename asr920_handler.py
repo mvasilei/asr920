@@ -41,8 +41,6 @@ def get_user_password():
     return USER, PASS
 
 def execute_command(command, channel):
-    rcv_timeout = 30
-    interval_length = 0.1
     cbuffer = []
     data = ''
 
@@ -52,15 +50,12 @@ def execute_command(command, channel):
             data = channel.recv(1000)
             cbuffer.append(data)
 
-        rcv_timeout -= interval_length
-        if rcv_timeout < 0:
-            break
-        else:
-            time.sleep(interval_length)
+        time.sleep(0.5)
+        data_no_trails = data.strip()
 
-        data_no_trails =  data.strip()
-        if len(data_no_trails) > 0 and (data_no_trails[-1] == '>' or data_no_trails[-1] == '#'):
-            break
+        if len(data_no_trails) > 0: #and
+            if (data_no_trails[-1] == '#'):
+                break
 
     if channel.recv_ready():
         data = channel.recv(1000)
@@ -91,7 +86,7 @@ def multi_send_command(hosts_list, check_type, user, password):
                     outfile.write(str(dict[key]))
             else:
                connection_error.append(key)
-
+        prc.join()
     return connection_error
 
 def run_checks(host, check_type, user, password,result_queue):
@@ -125,9 +120,9 @@ def run_checks(host, check_type, user, password,result_queue):
             output += execute_command(cmd, channel)
 
         result_queue.put({host: output})
+        connection_teardown(client)
     else:
         result_queue.put({host: 'Connection'})
-    connection_teardown(client)
 
 def run_os_command(host, command, result_queue=None):
     response = subprocess.Popen([command], stdout=subprocess.PIPE, shell=True)
@@ -140,8 +135,9 @@ def run_os_command(host, command, result_queue=None):
     else:
         print('An error occurred: ', response.returncode)
 
-def multi_ping(hosts_list, unreachable):
+def multi_ping(hosts_list):
     pool = []
+    unreachable = []
     reachable_hosts = []
     count = 0
     result_queue = mp.Queue()
@@ -163,19 +159,18 @@ def multi_ping(hosts_list, unreachable):
         prc.join()
         item = result_queue.get()
         for key in item:
-            if ' 0%' in item[key]:
+            if ' 0%' in item[key]:  #change this from ' 0%' to 'alive' when  move to bastion
                 reachable_hosts.append(key)
             else:
                 unreachable.append(key)
                 print(key + ' is unreachable and won''t be processed further')
-
     return reachable_hosts, unreachable
 
 def wait_till_up(host):
     isup = False
-    print('Pausing for 5 minutes for host ' + host + ' reload')
+    print('Device will go down in 1 minute, then pausing for 5 minutes for ' + host + ' to reload')
     time.sleep(300)
-    for i in range(2):
+    for i in range(5):
         print('Checking device ' + host)
         out = run_os_command(host, 'ping ' + host + ' -c 1')
         if (' 0%') not in out[host]:  #change this from ' 0%' to 'alive' when  move to bastion
@@ -196,18 +191,19 @@ def upgrade(user, password, host, failed_hosts):
     execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all\n', channel)
     execute_command('conf t\n', channel)
     execute_command('boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
+    execute_command('end\n', channel)
     execute_command('copy run start\n\n', channel)
-    execute_command('reload in 10\n\n', channel)
+    execute_command('reload in 1 reason Software upgrade\n\n', channel)
     connection_teardown(client)
 
     isup = wait_till_up(host)
     if isup == False:
-        print(host + ' didn''t recover for over 9 minutes, aborting process')
+        print(host + ' didn''t recover for over 15 minutes, aborting process')
         failed_hosts.put({host: 'notup'})
     else:
         channel, client = connection_establishment(user, password, host)
         out = execute_command('show version\n', channel)
-        if '16.12.07' in out:
+        if '17.03.03' in out:
             print(host + ' host upgraded successfully')
             failed_hosts.put({host: 'success'})
         else:
@@ -243,7 +239,7 @@ def multi_upgrade(hosts_list, user, password):
 def progress(filename, size, sent):
     sys.stdout.write("%s's upload progress: %.2f%%    \r" % (filename, float(sent) / float(size) * 100))
 
-def open_scp_channel(host, user, password, failed):
+def open_scp_channel(host, user, password):
      failed = []
      try:
           client = paramiko.SSHClient()
@@ -273,6 +269,15 @@ def file_upload(host, user, password, failed):
     free_space = re.compile(r'\(.*?(\d+).*\)')
     md5_hash = re.compile(r'(?<=\=).*')
 
+    if not os.path.exists('/tmp/asr920/images/'):
+        print ('Image directory doesn''t exist')
+        failed.put({host: 'NoDir'})
+        return None
+    elif not os.listdir('/tmp/asr920/images/'):
+        print ('Image directory is empty')
+        failed.put({host: 'EmptyDir'})
+        return None
+
     sshchannel, sshclient = connection_establishment(user, password, host)
 
     if sshchannel == None:
@@ -296,8 +301,9 @@ def file_upload(host, user, password, failed):
     connection_teardown(sshclient)
 
     for file in file_list:
-        client, failed_connection = open_scp_channel(host, user, password, failed_connection)
+        client, fc = open_scp_channel(host, user, password)
 
+        failed_connection.extend(fc)
         if len(failed_connection) == 0:
             sort_file = file.split('/')[-1]
             scp_client = SCPClient(client.get_transport(), progress=progress)
@@ -346,6 +352,83 @@ def multi_file_upload(hosts_list, user, password):
 
     return auth_failed, space_error, md5_error
 
+def rollback(user, password, host, failed_hosts):
+    channel, client = connection_establishment(user, password, host)
+    if channel == None:
+        failed_hosts.put({host: 'Connection'})
+        return None
+    execute_command('conf t\n', channel)
+    execute_command('no boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
+    execute_command('boot system bootflash:asr920igp-universalk9.V169_1A_ES04.SPA.bin\n', channel)
+    execute_command('end\n\n', channel)
+    execute_command('copy run start\n\n', channel)
+    execute_command('reload in 1 reason Software downgrade\n\n', channel)
+    connection_teardown(client)
+
+    isup = wait_till_up(host)
+    if isup == False:
+        print(host + ' didn''t recover for over 9 minutes, aborting process')
+        failed_hosts.put({host: 'notup'})
+    else:
+        channel, client = connection_establishment(user, password, host)
+        out = execute_command('show version\n', channel)
+        if '16.12.07' in out:
+            print(host + ' host rollbacked successfully')
+            failed_hosts.put({host: 'success'})
+        else:
+            failed_hosts.put({host: 'version'})
+
+def multi_rollback(hosts_list, user, password):
+    pool = []
+    failed_hosts = []
+    unrecovered_hosts = []
+    connection_error = []
+    failed_queue = mp.Queue()
+
+    for host in hosts_list:
+        pool.append(mp.Process(target=rollback, args=(user, password, host, failed_queue)))
+
+    for prc in pool:
+        prc.start()
+
+    for prc in pool:
+        prc.join()
+
+        item = failed_queue.get()
+        for key in item:
+            if item[key] == 'version':
+                failed_hosts.append(key)
+            elif item[key] == 'notup':
+                unrecovered_hosts.append(key)
+            elif item[key] == 'Connection':
+                connection_error.append(key)
+
+    return failed_hosts, unrecovered_hosts, connection_error
+
+def reboot_sequence(filename):
+    try:
+        with open(filename, 'r') as infile:
+            with open('temp.txt', 'w') as outfile:
+                for line in infile:
+                    response = subprocess.Popen('csginfo ' + line.strip('\n') + ' | grep -i vodams.*_920_.*', \
+                                                stdout=subprocess.PIPE, shell=True)
+
+                    if response.returncode == None:
+                        csginfo = response.communicate()[0]
+                        if csginfo != '':
+                            m = re.findall('vodams_\d+_920_\d+', csginfo.lower())
+                            current_record = list(sorted(set(result for result in m)))
+                            outfile.write(str(current_record) + '\n')
+
+            with open('temp.txt') as outfile:
+                uniq = set(outfile.readlines())
+                with open('tmp_asr920.txt', 'w') as final:
+                    final.writelines(set(uniq))
+
+            os.remove('temp.txt')
+    except IOError as e:
+        print(e)
+
 def main():
     unreachable = []
     reachable_hosts = []
@@ -357,7 +440,7 @@ def main():
     connection_error = []
 
     #create command line options menu
-    usage = 'usage: %prog [options] arg'
+    usage = 'usage: %prog options [arg]'
     parser = OptionParser(usage)
     parser.add_option('-c', '--prechecks', action='store_true', dest='prechecks',
                             help='Run prechecks on device/s')
@@ -369,7 +452,7 @@ def main():
                             help='Upload image files on device/s')
     parser.add_option('-p', '--postchecks', action='store_true', dest='postchecks',
                             help='Run postchecks on device/s')
-    parser.add_option('-r','--rollback', dest='rollback',
+    parser.add_option('-r','--rollback', action='store_true', dest='rollback',
                             help='Rollback device/s to previous IOS version provide absolute path to image file')
     parser.add_option('-u', '--upgrade', action='store_true', dest='upgrade',
                             help='Perform device/s upgrade IOS version')
@@ -395,69 +478,80 @@ def main():
             try:
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, 2, ''):
-                        reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        connection_error = multi_send_command(reachable_hosts, 'PRE', user, password)
+                        reachable_hosts, unreachable_hosts = multi_ping(lines)
+                        unreachable.extend(unreachable_hosts)
+                        if len(reachable_hosts) > 0:
+                            connection_error.extend(multi_send_command(reachable_hosts, 'PRE', user, password))
             except IOError as e:
                 print(e)
         else:
-            reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
-            connection_error = multi_send_command(reachable_hosts, 'PRE', user, password)
+            reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
+            if len(reachable_hosts) > 0:
+                connection_error.extend(multi_send_command(reachable_hosts, 'PRE', user, password))
     if options.postchecks:
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, 2, ''):
-                        reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        multi_send_command(reachable_hosts, 'POST', user, password)
+                        reachable_hosts, unreachable_hosts = multi_ping(lines)
+                        unreachable.extend(unreachable_hosts)
+                        if len(reachable_hosts) > 0:
+                            connection_error.extend(multi_send_command(reachable_hosts, 'POST', user, password))
             except IOError as e:
                 print(e)
         else:
-            reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
-            multi_send_command(reachable_hosts, 'POST', user, password)
+            reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
+            if len(reachable_hosts) > 0:
+                connection_error.extend(multi_send_command(reachable_hosts, 'POST', user, password))
     if options.upgrade:
         if options.filename:
             try:
+                # reboot_sequence(options.filename)
                 with open(options.filename, 'r') as infile:
-                    with open('temp.txt', 'w') as outfile:
-                        for line in infile:
-                            response = subprocess.Popen('csginfo ' + line.strip('\n') + ' | grep -i vodams.*_920_.*', \
-                                                  stdout=subprocess.PIPE, shell=True)
-
-                            if response.returncode == None:
-                                csginfo = response.communicate()[0]
-                                if csginfo != '':
-                                    m = re.findall('vodams_\d+_920_\d+', csginfo.lower())
-                                    current_record = list(sorted(set(result for result in m)))
-                                    outfile.write(str(current_record)+'\n')
-
-                    with open('temp.txt') as outfile:
-                        uniq = set(outfile.readlines())
-                        with open ('tmp.txt', 'w') as final:
-                           final.writelines(set(uniq))
-
-                    os.remove('temp.txt')
-                        #for lines in grouper(infile, mp.cpu_count()/4, ''):
-                        #reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        #upgrade_failed, unrecovered, connection_error = multi_upgrade(reachable_hosts, user, password)
-                #os.replace('temp.txt', options.filename)
+                    for lines in grouper(infile, 2, ''):
+                        reachable_hosts, unreachable_hosts = multi_ping(lines)
+                        unreachable.extend(unreachable_hosts)
+                        if len(reachable_hosts) > 0:
+                            ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
+                            upgrade_failed.extend(ufailed)
+                            unrecovered.extend(urevocered)
+                            connection_error.extend(cerror)
             except IOError as e:
                 print(e)
         else:
-            #reachable_hosts, unreachable = multi_ping(lines, unreachable)
-            #upgrade_failed, unrecovered = multi_upgrade(reachable_hosts, user, password)
-            pass
+            reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
+            if len(reachable_hosts) > 0:
+                upgrade_failed, unrecovered, connection_error = multi_upgrade(reachable_hosts, user, password)
+                #pass
+    if options.rollback:
+        if options.filename:
+            #reboot_sequence(options.filename)
+            with open(options.filename, 'r') as infile:
+                for lines in grouper(infile, 2, ''):
+                    reachable_hosts, unreachable_hosts = multi_ping(lines)
+                    unreachable.extend(unreachable_hosts)
+            if len(reachable_hosts)>0:
+                upgrade_failed, unrecovered, connection_error = multi_rollback(reachable_hosts, user, password)
+        else:
+            reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
+            if len(reachable_hosts) > 0:
+                upgrade_failed, unrecovered, connection_error = multi_rollback(reachable_hosts, user, password)
+            #pass
     if options.upload:
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, 5, ''):
-                        reachable_hosts, unreachable = multi_ping(lines, unreachable)
-                        upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
+                        reachable_hosts, unreachable_hosts = multi_ping(line)
+                        unreachable.extend(unreachable_hosts)
+                        if len(reachable_hosts) > 0:
+                            upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
             except IOError as e:
                 print(e)
         else:
-            reachable_hosts, unreachable = multi_ping(options.device.split(), unreachable)
-            upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
+            reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
+            if len(reachable_hosts) > 0:
+                upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
 
     #print lists of hosts processed with error
     if len(connection_error)>0:
