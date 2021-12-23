@@ -37,7 +37,7 @@ def connection_establishment(USER, PASS, host):
 
 def get_user_password():
     USER = raw_input("Username:")
-    PASS = getpass.getpass(prompt='Enter User password: ')
+    PASS = getpass.getpass(prompt='Enter user password: ')
     return USER, PASS
 
 def execute_command(command, channel):
