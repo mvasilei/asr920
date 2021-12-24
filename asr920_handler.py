@@ -172,7 +172,7 @@ def wait_till_up(host):
     time.sleep(300)
     for i in range(5):
         print('Checking device ' + host)
-        out = run_os_command(host, 'ping ' + host + ' -c 1')
+        out = run_os_command(host, 'ping ' + host + ' -c 2')
         if (' 0%') not in out[host]:  #change this from ' 0%' to 'alive' when  move to bastion
             print('Waiting for ' + host + ' to respond for 2 more minutes')
             time.sleep(120)
@@ -438,6 +438,7 @@ def main():
     upgrade_failed = []
     unrecovered = []
     connection_error = []
+    host_list = []
 
     #create command line options menu
     usage = 'usage: %prog options [arg]'
@@ -506,37 +507,67 @@ def main():
     if options.upgrade:
         if options.filename:
             try:
-                # reboot_sequence(options.filename)
-                with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, 2, ''):
-                        reachable_hosts, unreachable_hosts = multi_ping(lines)
-                        unreachable.extend(unreachable_hosts)
-                        if len(reachable_hosts) > 0:
-                            ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
-                            upgrade_failed.extend(ufailed)
-                            unrecovered.extend(urevocered)
-                            connection_error.extend(cerror)
+                reboot_sequence(options.filename)
+                with open('tmp.txt', 'r') as infile:
+                    for lines in infile:
+                        host_list.extend(lines.replace('[','').replace("'",'').replace(']','').strip('\n').split(','))
+                        if len(host_list) >= 3:
+                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
+                            unreachable.extend(unreachable_hosts)
+                            if len(reachable_hosts) > 0:
+                                ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
+                                upgrade_failed.extend(ufailed)
+                                unrecovered.extend(urevocered)
+                                connection_error.extend(cerror)
+                            host_list = []
+                        else:
+                            continue
+                    else:
+                        if len(host_list) != 0:
+                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
+                            unreachable.extend(unreachable_hosts)
+                            if len(reachable_hosts) > 0:
+                                ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
+                                upgrade_failed.extend(ufailed)
+                                unrecovered.extend(urevocered)
+                                connection_error.extend(cerror)
+                        host_list = []
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
             if len(reachable_hosts) > 0:
                 upgrade_failed, unrecovered, connection_error = multi_upgrade(reachable_hosts, user, password)
-                #pass
     if options.rollback:
         if options.filename:
-            #reboot_sequence(options.filename)
-            with open(options.filename, 'r') as infile:
-                for lines in grouper(infile, 2, ''):
-                    reachable_hosts, unreachable_hosts = multi_ping(lines)
-                    unreachable.extend(unreachable_hosts)
-            if len(reachable_hosts)>0:
-                upgrade_failed, unrecovered, connection_error = multi_rollback(reachable_hosts, user, password)
-        else:
-            reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
-            if len(reachable_hosts) > 0:
-                upgrade_failed, unrecovered, connection_error = multi_rollback(reachable_hosts, user, password)
-            #pass
+            try:
+                reboot_sequence(options.filename)
+                with open('tmp.txt', 'r') as infile:
+                    for lines in infile:
+                        host_list.extend(lines.replace('[','').replace("'",'').replace(']','').strip('\n').split(','))
+                        if len(host_list) >= 3:
+                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
+                            unreachable.extend(unreachable_hosts)
+                            if len(reachable_hosts) > 0:
+                                ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
+                                upgrade_failed.extend(ufailed)
+                                unrecovered.extend(urevocered)
+                                connection_error.extend(cerror)
+                            host_list = []
+                        else:
+                            continue
+                    else:
+                        if len(host_list) != 0:
+                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
+                            unreachable.extend(unreachable_hosts)
+                            if len(reachable_hosts) > 0:
+                                ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
+                                upgrade_failed.extend(ufailed)
+                                unrecovered.extend(urevocered)
+                                connection_error.extend(cerror)
+                        host_list = []
+            except IOError as e:
+                print(e)
     if options.upload:
         if options.filename:
             try:
