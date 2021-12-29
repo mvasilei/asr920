@@ -429,6 +429,46 @@ def reboot_sequence(filename):
     except IOError as e:
         print(e)
 
+def reboot_proceed(user, password, unreachable, upgrade_failed, unrecovered,connection_error, operation):
+    host_list = []
+    with open('tmp.txt', 'r') as infile:
+        for lines in infile:
+            host_list.extend(lines.replace('[', '').replace("'", '').replace(']', '').strip('\n').split(','))
+            if len(host_list) >= 3:
+                reachable_hosts, unreachable_hosts = multi_ping(host_list)
+                unreachable.extend(unreachable_hosts)
+                if len(reachable_hosts) > 0:
+                    if operation == 'rollback':
+                        ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
+                        upgrade_failed.extend(ufailed)
+                        unrecovered.extend(urevocered)
+                        connection_error.extend(cerror)
+                    else:
+                        ufailed, urevocered, cerror = multiupgrade(reachable_hosts, user, password)
+                        upgrade_failed.extend(ufailed)
+                        unrecovered.extend(urevocered)
+                        connection_error.extend(cerror)
+                host_list = []
+            else:
+                continue
+        else:
+            if len(host_list) != 0:
+                reachable_hosts, unreachable_hosts = multi_ping(host_list)
+                unreachable.extend(unreachable_hosts)
+                if len(reachable_hosts) > 0:
+                    if operation == 'rollback':
+                        ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
+                        upgrade_failed.extend(ufailed)
+                        unrecovered.extend(urevocered)
+                        connection_error.extend(cerror)
+                    else:
+                        ufailed, urevocered, cerror = multiupgrade(reachable_hosts, user, password)
+                        upgrade_failed.extend(ufailed)
+                        unrecovered.extend(urevocered)
+                        connection_error.extend(cerror)
+            host_list = []
+    return unreachable, upgrade_failed, unrecovered,connection_error
+
 def main():
     unreachable = []
     reachable_hosts = []
@@ -438,7 +478,6 @@ def main():
     upgrade_failed = []
     unrecovered = []
     connection_error = []
-    host_list = []
 
     #create command line options menu
     usage = 'usage: %prog options [arg]'
@@ -508,30 +547,12 @@ def main():
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                with open('tmp.txt', 'r') as infile:
-                    for lines in infile:
-                        host_list.extend(lines.replace('[','').replace("'",'').replace(']','').strip('\n').split(','))
-                        if len(host_list) >= 3:
-                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
-                            unreachable.extend(unreachable_hosts)
-                            if len(reachable_hosts) > 0:
-                                ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
-                                upgrade_failed.extend(ufailed)
-                                unrecovered.extend(urevocered)
-                                connection_error.extend(cerror)
-                            host_list = []
-                        else:
-                            continue
-                    else:
-                        if len(host_list) != 0:
-                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
-                            unreachable.extend(unreachable_hosts)
-                            if len(reachable_hosts) > 0:
-                                ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
-                                upgrade_failed.extend(ufailed)
-                                unrecovered.extend(urevocered)
-                                connection_error.extend(cerror)
-                        host_list = []
+                unreachable, upgrade_failed, unrecovered,connection_error = reboot_proceed(user, password,
+                                                                                           unreachable,
+                                                                                           upgrade_failed,
+                                                                                           unrecovered,
+                                                                                           connection_error,
+                                                                                           'upgrade')
             except IOError as e:
                 print(e)
         else:
@@ -542,30 +563,12 @@ def main():
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                with open('tmp.txt', 'r') as infile:
-                    for lines in infile:
-                        host_list.extend(lines.replace('[','').replace("'",'').replace(']','').strip('\n').split(','))
-                        if len(host_list) >= 3:
-                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
-                            unreachable.extend(unreachable_hosts)
-                            if len(reachable_hosts) > 0:
-                                ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
-                                upgrade_failed.extend(ufailed)
-                                unrecovered.extend(urevocered)
-                                connection_error.extend(cerror)
-                            host_list = []
-                        else:
-                            continue
-                    else:
-                        if len(host_list) != 0:
-                            reachable_hosts, unreachable_hosts = multi_ping(host_list)
-                            unreachable.extend(unreachable_hosts)
-                            if len(reachable_hosts) > 0:
-                                ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
-                                upgrade_failed.extend(ufailed)
-                                unrecovered.extend(urevocered)
-                                connection_error.extend(cerror)
-                        host_list = []
+                unreachable, upgrade_failed, unrecovered,connection_error = reboot_proceed(user, password,
+                                                                                           unreachable,
+                                                                                           upgrade_failed,
+                                                                                           unrecovered,
+                                                                                           connection_error,
+                                                                                          'rollback')
             except IOError as e:
                 print(e)
     if options.upload:
