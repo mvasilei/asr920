@@ -50,7 +50,7 @@ def execute_command(command, channel):
             data = channel.recv(1000)
             cbuffer.append(data)
 
-        time.sleep(0.5)
+        time.sleep(0.2)
         data_no_trails = data.strip()
 
         if len(data_no_trails) > 0: #and
@@ -363,6 +363,7 @@ def rollback(user, password, host, failed_hosts):
     execute_command('end\n\n', channel)
     execute_command('copy run start\n\n', channel)
     execute_command('reload in 1 reason Software downgrade\n\n', channel)
+    execute_command('show reload\n', channel)
     connection_teardown(client)
 
     isup = wait_till_up(host)
@@ -372,7 +373,7 @@ def rollback(user, password, host, failed_hosts):
     else:
         channel, client = connection_establishment(user, password, host)
         out = execute_command('show version\n', channel)
-        if '16.12.07' in out:
+        if '16.09.01' in out:
             print(host + ' host rollbacked successfully')
             failed_hosts.put({host: 'success'})
         else:
@@ -444,7 +445,7 @@ def reboot_proceed(user, password, unreachable, upgrade_failed, unrecovered,conn
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
                     else:
-                        ufailed, urevocered, cerror = multiupgrade(reachable_hosts, user, password)
+                        ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
                         upgrade_failed.extend(ufailed)
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
@@ -462,7 +463,7 @@ def reboot_proceed(user, password, unreachable, upgrade_failed, unrecovered,conn
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
                     else:
-                        ufailed, urevocered, cerror = multiupgrade(reachable_hosts, user, password)
+                        ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
                         upgrade_failed.extend(ufailed)
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
@@ -501,15 +502,19 @@ def main():
 
     #set out the rules of usage
     if options.filename and options.device:
-        parser.error('Options device and filename are mutually exclusive')
-    if (options.filename or options.device) and not (options.prechecks or options.postchecks or options.upload \
-                                                                     or options.upgrade or options.rollback):
-        parser.error('Options filename/device should be given with any of prechecks, postchecks, upload,\
-                          upgrade, rollback')
-    if options.prechecks and (options.postchecks or options.upload):
-        parser.error('Options prechecks, postchecks, upload are mutually exclusive')
+        parser.error('Option device and filename are mutually exclusive')
+    if options.prechecks and (options.postchecks or options.upload or options.rollback or options.upgrade):
+        parser.error('Options prechecks and postchecks/upload/upgrade/rollback are mutually exclusive')
     if (options.upgrade or options.rollback) and (options.prechecks or options.postchecks or options.upload):
         parser.error('Options upgrade/downgrade and prechecks/postchecks/upload are mutually exclusive')
+    if options.upgrade and options.rollback:
+        parser.error('Option upgrade and rollback are mutually exclusive')
+    if ((options.prechecks or options.postchecks or options.upload or options.upgrade or options.rollback)
+            and not (options.filename or options.device)):
+        parser.error('Option filename/device should be given with any of prechecks/postchecks/upload/upgrade/rollback')
+    if (options.filename or options.device) and not (options.prechecks or options.postchecks or options.upload
+                                                                     or options.upgrade or options.rollback):
+        parser.error('Option filename/device should be given with any of prechecks/postchecks/upload/upgrade/rollback')
 
     user, password = get_user_password()
 
@@ -576,7 +581,7 @@ def main():
             try:
                 with open(options.filename, 'r') as infile:
                     for lines in grouper(infile, 5, ''):
-                        reachable_hosts, unreachable_hosts = multi_ping(line)
+                        reachable_hosts, unreachable_hosts = multi_ping(lines)
                         unreachable.extend(unreachable_hosts)
                         if len(reachable_hosts) > 0:
                             upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
