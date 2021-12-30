@@ -187,9 +187,12 @@ def upgrade(user, password, host, failed_hosts):
     if channel == None:
         failed_hosts.put({host: 'Connection'})
         return None
+    output = execute_command('sho run | i boot system bootflash\n', channel)
 
     execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all\n', channel)
     execute_command('conf t\n', channel)
+    for boot in re.findall(r'boot system bootflash:.*', output):
+        execute_command('no ' + boot + '\n', channel)
     execute_command('boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
     execute_command('end\n', channel)
     execute_command('copy run start\n\n', channel)
@@ -238,6 +241,7 @@ def multi_upgrade(hosts_list, user, password):
 
 def progress(filename, size, sent):
     sys.stdout.write("%s's upload progress: %.2f%%    \r" % (filename, float(sent) / float(size) * 100))
+    sys.stdout.flush()
 
 def open_scp_channel(host, user, password):
      failed = []
@@ -576,15 +580,22 @@ def main():
                                                                                           'rollback')
             except IOError as e:
                 print(e)
+        else:
+            reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
+            if len(reachable_hosts) > 0:
+                upgrade_failed, unrecovered, connection_error = multi_rollback(reachable_hosts, user, password)
     if options.upload:
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, 5, ''):
+                    for lines in grouper(infile, 1, ''):
                         reachable_hosts, unreachable_hosts = multi_ping(lines)
                         unreachable.extend(unreachable_hosts)
                         if len(reachable_hosts) > 0:
-                            upload_failed, space_error, md5_error = multi_file_upload(reachable_hosts, user, password)
+                            upfailed, serror, md5error = multi_file_upload(reachable_hosts, user, password)
+                            upload_failed.extend(upfailed)
+                            space_error.extend(serror)
+                            md5_error.extend(md5error)
             except IOError as e:
                 print(e)
         else:
