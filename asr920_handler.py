@@ -73,7 +73,8 @@ def multi_send_command(hosts_list, check_type, user, password):
     result_queue = mp.Queue()
 
     for host in hosts_list:
-        pool.append(mp.Process(target=run_checks, args=(host.strip('\n'), check_type, user, password, result_queue)))
+        pool.append(
+                mp.Process(target=run_checks, args=(host.strip('\n'), check_type, user, password, result_queue)))
 
     for prc in pool:
         prc.start()
@@ -141,17 +142,21 @@ def multi_ping(hosts_list):
     reachable_hosts = []
     count = 0
     result_queue = mp.Queue()
+    processed_hosts = []
 
     for host in hosts_list:
         if host == '':
             continue
+        elif '_920_' not in host:
+            print(host + ' not a valid host...skipping')
         else:
             pool.append(mp.Process(target=run_os_command, args=(host.strip('\n'),
                                                                 'ping ' + host.strip('\n') + ' -c 2',
                                                                 result_queue)))
+            processed_hosts.append(host)
 
     for prc in pool:
-        print('Testing reachability for host ' + hosts_list[count])
+        print('Testing reachability for host ' + processed_hosts[count])
         prc.start()
         count += 1
 
