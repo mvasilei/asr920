@@ -192,11 +192,19 @@ def upgrade(user, password, host, failed_hosts):
     if channel == None:
         failed_hosts.put({host: 'Connection'})
         return None
-    output = execute_command('sho run | i boot system bootflash\n', channel)
+    run_output = execute_command('sho run | i boot system bootflash\n', channel)
+    if 'Error' in execute_command('dir bootflash:asr920igp-15_6_43r_s_rommon.pkg\n', channel):
+        print ('Image files are missing on ' + host)
+        failed_hosts.put({host: 'FileMissing'})
+        return None
+    if 'Error' in execute_command('dir asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel):
+        print ('Image files are missing on ' + host)
+        failed_hosts.put({host: 'FileMissing'})
+        return None
 
     execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all\n', channel)
     execute_command('conf t\n', channel)
-    for boot in re.findall(r'boot system bootflash:.*', output):
+    for boot in re.findall(r'boot system bootflash:.*', run_output):
         execute_command('no ' + boot + '\n', channel)
     execute_command('boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
     execute_command('end\n', channel)
@@ -222,6 +230,7 @@ def multi_upgrade(hosts_list, user, password):
     failed_hosts = []
     unrecovered_hosts = []
     connection_error = []
+    file_missing = []
     failed_queue = mp.Queue()
 
     for host in hosts_list:
@@ -241,8 +250,10 @@ def multi_upgrade(hosts_list, user, password):
                 unrecovered_hosts.append(key)
             elif item[key] == 'Connection':
                 connection_error.append(key)
+            else:
+                file_missing.append(key)
 
-    return failed_hosts, unrecovered_hosts, connection_error
+    return failed_hosts, unrecovered_hosts, connection_error, file_missing
 
 def progress(filename, size, sent):
     sys.stdout.write("%s's upload progress: %.2f%%    \r" % (filename, float(sent) / float(size) * 100))
@@ -366,6 +377,10 @@ def rollback(user, password, host, failed_hosts):
     if channel == None:
         failed_hosts.put({host: 'Connection'})
         return None
+    if 'Error' in execute_command('dir asr920igp-universalk9.V169_1A_ES04.SPA.bin\n', channel):
+        print ('Image files are missing on ' + host)
+        failed_hosts.put({host: 'FileMissing'})
+        return None
     execute_command('conf t\n', channel)
     execute_command('no boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
     execute_command('boot system bootflash:asr920igp-universalk9.V169_1A_ES04.SPA.bin\n', channel)
@@ -393,6 +408,7 @@ def multi_rollback(hosts_list, user, password):
     failed_hosts = []
     unrecovered_hosts = []
     connection_error = []
+    file_missing = []
     failed_queue = mp.Queue()
 
     for host in hosts_list:
@@ -412,8 +428,10 @@ def multi_rollback(hosts_list, user, password):
                 unrecovered_hosts.append(key)
             elif item[key] == 'Connection':
                 connection_error.append(key)
+            else:
+                file_missing.append(key)
 
-    return failed_hosts, unrecovered_hosts, connection_error
+    return failed_hosts, unrecovered_hosts, connection_error, file_missing
 
 def reboot_sequence(filename):
     try:
@@ -439,7 +457,7 @@ def reboot_sequence(filename):
     except IOError as e:
         print(e)
 
-def reboot_proceed(user, password, unreachable, upgrade_failed, unrecovered,connection_error, operation):
+def reboot_proceed(user, password, unreachable, upgrade_failed, unrecovered,connection_error, file_missing, operation):
     host_list = []
     with open('tmp.txt', 'r') as infile:
         for lines in infile:
@@ -449,15 +467,17 @@ def reboot_proceed(user, password, unreachable, upgrade_failed, unrecovered,conn
                 unreachable.extend(unreachable_hosts)
                 if len(reachable_hosts) > 0:
                     if operation == 'rollback':
-                        ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
+                        ufailed, urevocered, cerror, fmissing = multi_rollback(reachable_hosts, user, password)
                         upgrade_failed.extend(ufailed)
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
+                        file_missing.extend(fmissing)
                     else:
-                        ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
+                        ufailed, urevocered, cerror, fmissing = multi_upgrade(reachable_hosts, user, password)
                         upgrade_failed.extend(ufailed)
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
+                        file_missing.extend(fmissing)
                 host_list = []
             else:
                 continue
@@ -467,17 +487,19 @@ def reboot_proceed(user, password, unreachable, upgrade_failed, unrecovered,conn
                 unreachable.extend(unreachable_hosts)
                 if len(reachable_hosts) > 0:
                     if operation == 'rollback':
-                        ufailed, urevocered, cerror = multi_rollback(reachable_hosts, user, password)
+                        ufailed, urevocered, cerror, fmissing = multi_rollback(reachable_hosts, user, password)
                         upgrade_failed.extend(ufailed)
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
+                        file_missing.extend(fmissing)
                     else:
-                        ufailed, urevocered, cerror = multi_upgrade(reachable_hosts, user, password)
+                        ufailed, urevocered, cerror, fmissing = multi_upgrade(reachable_hosts, user, password)
                         upgrade_failed.extend(ufailed)
                         unrecovered.extend(urevocered)
                         connection_error.extend(cerror)
+                        file_missing.extend(fmissing)
             host_list = []
-    return unreachable, upgrade_failed, unrecovered,connection_error
+    return unreachable, upgrade_failed, unrecovered,connection_error, file_missing
 
 def main():
     unreachable = []
@@ -488,6 +510,7 @@ def main():
     upgrade_failed = []
     unrecovered = []
     connection_error = []
+    file_missing = []
 
     #create command line options menu
     usage = 'usage: %prog options [arg]'
@@ -561,34 +584,36 @@ def main():
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                unreachable, upgrade_failed, unrecovered,connection_error = reboot_proceed(user, password,
+                unreachable, upgrade_failed, unrecovered, connection_error, file_missing = reboot_proceed(user, password,
                                                                                            unreachable,
                                                                                            upgrade_failed,
                                                                                            unrecovered,
                                                                                            connection_error,
+                                                                                           file_missing,
                                                                                            'upgrade')
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
             if len(reachable_hosts) > 0:
-                upgrade_failed, unrecovered, connection_error = multi_upgrade(reachable_hosts, user, password)
+                upgrade_failed, unrecovered, connection_error, file_missing = multi_upgrade(reachable_hosts, user, password)
     if options.rollback:
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                unreachable, upgrade_failed, unrecovered,connection_error = reboot_proceed(user, password,
+                unreachable, upgrade_failed, unrecovered,connection_error, file_missing = reboot_proceed(user, password,
                                                                                            unreachable,
                                                                                            upgrade_failed,
                                                                                            unrecovered,
                                                                                            connection_error,
+                                                                                           file_missing,
                                                                                           'rollback')
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
             if len(reachable_hosts) > 0:
-                upgrade_failed, unrecovered, connection_error = multi_rollback(reachable_hosts, user, password)
+                upgrade_failed, unrecovered, connection_error, file_missing = multi_rollback(reachable_hosts, user, password)
     if options.upload:
         if options.filename:
             try:
@@ -623,6 +648,8 @@ def main():
         print('Devices not in the right code version:' + str(upgrade_failed))
     if len(unrecovered)>0:
         print('Host unreachable after upgrade:' + str(unrecovered))
+    if len(file_missing)>0:
+        print('Image files are missing on:' + str(file_missing))
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)  #catch ctrl-c and call handler to terminate the script
