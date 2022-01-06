@@ -151,7 +151,7 @@ def multi_ping(hosts_list):
             print(host + ' not a valid host...skipping')
         else:
             pool.append(mp.Process(target=run_os_command, args=(host.strip('\n'),
-                                                                'ping ' + host.strip('\n') + ' -c 2',
+                                                                'ping ' + host.strip('\n') + ' 2',
                                                                 result_queue)))
             processed_hosts.append(host)
 
@@ -164,7 +164,7 @@ def multi_ping(hosts_list):
         prc.join()
         item = result_queue.get()
         for key in item:
-            if ' 0%' in item[key]:  #change this from ' 0%' to 'alive' when  move to bastion
+            if 'alive' in item[key]:  #change this from ' 0%' to 'alive' when  move to bastion
                 reachable_hosts.append(key)
             else:
                 unreachable.append(key)
@@ -173,12 +173,12 @@ def multi_ping(hosts_list):
 
 def wait_till_up(host):
     isup = False
-    print('Device will go down in 1 minute, then pausing for 5 minutes for ' + host + ' to reload')
-    time.sleep(300)
+    print('Device will go down in 1 minute, then pausing for 25 minutes for ' + host + ' to reload')
+    time.sleep(1500)
     for i in range(5):
         print('Checking device ' + host)
-        out = run_os_command(host, 'ping ' + host + ' -c 2')
-        if (' 0%') not in out[host]:  #change this from ' 0%' to 'alive' when  move to bastion
+        out = run_os_command(host, 'ping ' + host + ' 2')
+        if ('alive') not in out[host]:  #change this from ' 0%' to 'alive' when  move to bastion
             print('Waiting for ' + host + ' to respond for 2 more minutes')
             time.sleep(120)
         else:
@@ -397,7 +397,7 @@ def rollback(user, password, host, failed_hosts):
     else:
         channel, client = connection_establishment(user, password, host)
         out = execute_command('show version\n', channel)
-        if '16.09.01' in out:
+        if 'V169_1A_ES04' in out:
             print(host + ' host rollbacked successfully')
             failed_hosts.put({host: 'success'})
         else:
@@ -434,26 +434,41 @@ def multi_rollback(hosts_list, user, password):
     return failed_hosts, unrecovered_hosts, connection_error, file_missing
 
 def reboot_sequence(filename):
+    print('Calculating reload sequence... this might take a while, depending on the number of devices you upgrade')
+    print('This process consults csginfo which might raise error messages... you can ignore')
     try:
-        with open(filename, 'r') as infile:
-            with open('temp.txt', 'w') as outfile:
-                for line in infile:
-                    response = subprocess.Popen('csginfo ' + line.strip('\n') + ' | grep -i vodams.*_920_.*', \
-                                                stdout=subprocess.PIPE, shell=True)
+        with open(filename, 'r') as infile, open('temp.txt', 'w') as outfile:
+            for line in infile:
+                response = subprocess.Popen('csginfo ' + line.strip('\n') + ' | grep -i vodams.*_920_.*',
+                                            stdout=subprocess.PIPE, shell=True)
 
-                    if response.returncode == None:
-                        csginfo = response.communicate()[0]
-                        if csginfo != '':
-                            m = re.findall('vodams_\d+_920_\d+', csginfo.lower())
-                            current_record = list(sorted(set(result for result in m)))
-                            outfile.write(str(current_record) + '\n')
+                if response.returncode == None:
+                    csginfo = response.communicate()[0]
+                    if csginfo != '':
+                        m = re.findall('vodams_\d+_920_\d+', csginfo.lower())
+                        current_record = list(sorted(set(result for result in m)))
+                        outfile.write(str(current_record) + '\n')
 
-            with open('temp.txt') as outfile:
-                uniq = set(outfile.readlines())
-                with open('tmp_asr920.txt', 'w') as final:
-                    final.writelines(set(uniq))
+        #Remove duplicate entries
+        with open('temp.txt', 'r') as infile, open('swap_asr920.txt', 'w') as outfile:
+            uniq = set(infile.readlines())
+            outfile.writelines(set(uniq))
 
-            os.remove('temp.txt')
+        #Workaround csginfo not returning cluster information for some subtended csgs
+        with open('tmp_asr920.txt', 'w') as outfile, open('swap_asr920.txt', 'r') as infile:
+            data = infile.readlines()
+            clean_data = str(data).replace('[', '').replace("'", '').replace(']', '').strip('\\n')
+            infile.seek(0)
+            for line in infile:
+                if len(line.split(',')) == 1:
+                    count = clean_data.count(line.replace('[', '').replace("'", '').replace(']', '').strip('\n').strip())
+                    if count == 1:
+                        outfile.write(line)
+                else:
+                    outfile.write(line)
+
+        os.remove('temp.txt')
+        os.remove('swap_asr920.txt')
     except IOError as e:
         print(e)
 
@@ -529,8 +544,14 @@ def main():
                             help='Rollback device/s to previous IOS version provide absolute path to image file')
     parser.add_option('-u', '--upgrade', action='store_true', dest='upgrade',
                             help='Perform device/s upgrade IOS version')
+    parser.add_option('-n', '--number', action='store_true', dest='number',
+                            help='Number of devices to be upgraded in parallel')
 
     (options, args) = parser.parse_args()
+
+    if not len(sys.argv) > 1:
+        parser.print_help()
+        exit()
 
     #set out the rules of usage
     if options.filename and options.device:
@@ -554,7 +575,7 @@ def main():
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, 2, ''):
+                    for lines in grouper(infile, mp.cpu_count()/4, ''):
                         reachable_hosts, unreachable_hosts = multi_ping(lines)
                         unreachable.extend(unreachable_hosts)
                         if len(reachable_hosts) > 0:
@@ -569,7 +590,7 @@ def main():
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, 2, ''):
+                    for lines in grouper(infile, mp.cpu_count()/4, ''):
                         reachable_hosts, unreachable_hosts = multi_ping(lines)
                         unreachable.extend(unreachable_hosts)
                         if len(reachable_hosts) > 0:
@@ -584,41 +605,43 @@ def main():
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                unreachable, upgrade_failed, unrecovered, connection_error, file_missing = reboot_proceed(user, password,
-                                                                                           unreachable,
-                                                                                           upgrade_failed,
-                                                                                           unrecovered,
-                                                                                           connection_error,
-                                                                                           file_missing,
-                                                                                           'upgrade')
+                #unreachable, upgrade_failed, unrecovered, connection_error, file_missing = reboot_proceed(user, password,
+                #                                                                           unreachable,
+                #                                                                           upgrade_failed,
+                #                                                                           unrecovered,
+                #                                                                           connection_error,
+                #                                                                           file_missing,
+                #                                                                           'upgrade')
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
             if len(reachable_hosts) > 0:
-                upgrade_failed, unrecovered, connection_error, file_missing = multi_upgrade(reachable_hosts, user, password)
+                #upgrade_failed, unrecovered, connection_error, file_missing = multi_upgrade(reachable_hosts, user, password)
+                pass
     if options.rollback:
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                unreachable, upgrade_failed, unrecovered,connection_error, file_missing = reboot_proceed(user, password,
-                                                                                           unreachable,
-                                                                                           upgrade_failed,
-                                                                                           unrecovered,
-                                                                                           connection_error,
-                                                                                           file_missing,
-                                                                                          'rollback')
+                #unreachable, upgrade_failed, unrecovered,connection_error, file_missing = reboot_proceed(user, password,
+                #                                                                           unreachable,
+                #                                                                           upgrade_failed,
+                #                                                                           unrecovered,
+                #                                                                           connection_error,
+                #                                                                           file_missing,
+                #                                                                          'rollback')
             except IOError as e:
                 print(e)
         else:
             reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
             if len(reachable_hosts) > 0:
-                upgrade_failed, unrecovered, connection_error, file_missing = multi_rollback(reachable_hosts, user, password)
+                #upgrade_failed, unrecovered, connection_error, file_missing = multi_rollback(reachable_hosts, user, password)
+                pass
     if options.upload:
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, 1, ''):
+                    for lines in grouper(infile, mp.cpu_count()/4, ''):
                         reachable_hosts, unreachable_hosts = multi_ping(lines)
                         unreachable.extend(unreachable_hosts)
                         if len(reachable_hosts) > 0:
