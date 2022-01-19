@@ -26,9 +26,9 @@ def connection_establishment(USER, PASS, host):
         channel.send(PASS + '\n')
         channel.send('term len 0\n')
         while not channel.recv_ready():
-           time.sleep(1)
+           time.sleep(0.5)
 
-        output = channel.recv(1024)
+        output = channel.recv(8192)
     except paramiko.AuthenticationException as error:
         print ('Authentication Error on host: ' + host)
         return (None, None)
@@ -36,6 +36,7 @@ def connection_establishment(USER, PASS, host):
     return (channel, client)
 
 def get_user_password():
+    sys.stdin = open('/dev/tty')
     USER = raw_input("Username:")
     PASS = getpass.getpass(prompt='Enter user password: ')
     return USER, PASS
@@ -50,7 +51,7 @@ def execute_command(command, channel):
             data = channel.recv(1000)
             cbuffer.append(data)
 
-        time.sleep(0.2)
+        time.sleep(0.5)
         data_no_trails = data.strip()
 
         if len(data_no_trails) > 0: #and
@@ -175,7 +176,7 @@ def wait_till_up(host):
     isup = False
     print('Device will go down in 1 minute, then pausing for 25 minutes for ' + host + ' to reload')
     time.sleep(1500)
-    for i in range(5):
+    for i in range(2):
         print('Checking device ' + host)
         out = run_os_command(host, 'ping ' + host + ' 2')
         if ('alive') not in out[host]:  #change this from ' 0%' to 'alive' when  move to bastion
@@ -202,6 +203,7 @@ def upgrade(user, password, host, failed_hosts):
         failed_hosts.put({host: 'FileMissing'})
         return None
 
+    print ('Upgrading ROMMON... please wait')
     execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all\n', channel)
     execute_command('conf t\n', channel)
     for boot in re.findall(r'boot system bootflash:.*', run_output):
@@ -214,14 +216,40 @@ def upgrade(user, password, host, failed_hosts):
 
     isup = wait_till_up(host)
     if isup == False:
-        print(host + ' didn''t recover for over 15 minutes, aborting process')
+        print(host + ' didn''t recover for over 25 minutes, aborting process')
         failed_hosts.put({host: 'notup'})
     else:
+        user, password = get_user_password() #remove
         channel, client = connection_establishment(user, password, host)
         out = execute_command('show version\n', channel)
         if '17.03.03' in out:
             print(host + ' host upgraded successfully')
             failed_hosts.put({host: 'success'})
+            print('Configuring ' + host + ' post upgrade')
+            execute_command('conf t\n', channel)
+            execute_command('snmp-server view q iso included\n', channel)
+            execute_command('snmp-server view q ciscoCefMIB excluded\n', channel)
+            execute_command('snmp-server view IVView iso included\n', channel)
+            execute_command('snmp-server view IVView ciscoCefMIB excluded\n', channel)
+            execute_command('snmp-server view IVUserView iso included\n', channel)
+            execute_command('snmp-server view IVUserView ciscoCefMIB excluded\n', channel)
+            execute_command('snmp-server view SMARTSView iso included\n', channel)
+            execute_command('snmp-server view SMARTSView ciscoCefMIB excluded\n', channel)
+            execute_command('snmp-server view ScriptView iso included\n', channel)
+            execute_command('snmp-server view ScriptView ciscoCefMIB excluded\n', channel)
+            execute_command('no logging host 212.137.2.50 discriminator FAN+TEMP\n', channel)
+            execute_command('no logging host 212.137.2.20 discriminator FAN+TEMP\n', channel)
+            execute_command('no logging host 195.27.67.93 discriminator FAN+TEMP\n', channel)
+            execute_command('no logging host 194.221.227.93 discriminator FAN+TEMP\n', channel)
+            execute_command(
+                'logging discriminator FAN+TEMP msg-body drops (Speed: [0-6]|Board.Temperature: [1-4]|compliance violation)\n',
+                channel)
+            execute_command('logging host 212.137.2.50 discriminator FAN+TEMP\n', channel)
+            execute_command('logging host 212.137.2.20 discriminator FAN+TEMP\n', channel)
+            execute_command('logging host 195.27.67.93 discriminator FAN+TEMP\n', channel)
+            execute_command('logging host 194.221.227.93 discriminator FAN+TEMP\n', channel)
+            execute_command('end\n', channel)
+            execute_command('copy run start\n\n', channel)
         else:
             failed_hosts.put({host: 'version'})
 
@@ -250,7 +278,7 @@ def multi_upgrade(hosts_list, user, password):
                 unrecovered_hosts.append(key)
             elif item[key] == 'Connection':
                 connection_error.append(key)
-            else:
+            elif item[key] == 'FileMissing':
                 file_missing.append(key)
 
     return failed_hosts, unrecovered_hosts, connection_error, file_missing
@@ -262,6 +290,7 @@ def progress(filename, size, sent):
 def open_scp_channel(host, user, password):
      failed = []
      try:
+          user, password = get_user_password() #remove
           client = paramiko.SSHClient()
           client.load_system_host_keys()
           client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -298,6 +327,7 @@ def file_upload(host, user, password, failed):
         failed.put({host: 'EmptyDir'})
         return None
 
+    user, password = get_user_password() #remove
     sshchannel, sshclient = connection_establishment(user, password, host)
 
     if sshchannel == None:
@@ -321,28 +351,30 @@ def file_upload(host, user, password, failed):
     connection_teardown(sshclient)
 
     for file in file_list:
-        client, fc = open_scp_channel(host, user, password)
+         user, password = get_user_password()
+         client, fc = open_scp_channel(host, user, password)
 
-        failed_connection.extend(fc)
-        if len(failed_connection) == 0:
-            sort_file = file.split('/')[-1]
-            scp_client = SCPClient(client.get_transport(), progress=progress)
-            scp_client.put(file, 'bootflash:/' + sort_file)
-            scp_client.close
+         failed_connection.extend(fc)
+         if len(failed_connection) == 0:
+              sort_file = file.split('/')[-1]
+              scp_client = SCPClient(client.get_transport(), progress=progress)
+              scp_client.put(file, 'bootflash:/' + sort_file)
+              scp_client.close
 
-            sshchannel, sshclient = connection_establishment(user, password, host)
-            out = execute_command('verify /md5 bootflash:/' + sort_file + '\n', sshchannel)
-            connection_teardown(sshclient)
+              user, password = get_user_password() #remove
+              sshchannel, sshclient = connection_establishment(user, password, host)
+              out = execute_command('verify /md5 bootflash:/' + sort_file + '\n', sshchannel)
+              connection_teardown(sshclient)
 
-            m = md5_hash.search(out)
-            if m.group(0).strip() != md5[sort_file]:
-               print ('Wrong md5sum for ' + sort_file + ' on host: ' + host)
-               failed.put({host: 'MD5'})
-            else:
-                failed.put({host: 'Success'})
-        else:
-            failed.put({host: 'Connection'})
-            scp_client.close
+              m = md5_hash.search(out)
+              if m.group(0).strip() != md5[sort_file]:
+                   print ('Wrong md5sum for ' + sort_file + ' on host: ' + host)
+                   failed.put({host: 'MD5'})
+              else:
+                   failed.put({host: 'Success'})
+         else:
+              failed.put({host: 'Connection'})
+              scp_client.close
 
 def multi_file_upload(hosts_list, user, password):
     pool = []
@@ -381,6 +413,7 @@ def rollback(user, password, host, failed_hosts):
         print ('Image files are missing on ' + host)
         failed_hosts.put({host: 'FileMissing'})
         return None
+
     execute_command('conf t\n', channel)
     execute_command('no boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
     execute_command('boot system bootflash:asr920igp-universalk9.V169_1A_ES04.SPA.bin\n', channel)
@@ -392,9 +425,10 @@ def rollback(user, password, host, failed_hosts):
 
     isup = wait_till_up(host)
     if isup == False:
-        print(host + ' didn''t recover for over 9 minutes, aborting process')
+        print(host + ' didn''t recover for over 25 minutes, aborting process')
         failed_hosts.put({host: 'notup'})
     else:
+        user, password = get_user_password() #remove
         channel, client = connection_establishment(user, password, host)
         out = execute_command('show version\n', channel)
         if 'V169_1A_ES04' in out:
@@ -428,7 +462,7 @@ def multi_rollback(hosts_list, user, password):
                 unrecovered_hosts.append(key)
             elif item[key] == 'Connection':
                 connection_error.append(key)
-            else:
+            elif item[key] == 'FileMissing':
                 file_missing.append(key)
 
     return failed_hosts, unrecovered_hosts, connection_error, file_missing
@@ -617,7 +651,7 @@ def main():
         else:
             reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
             if len(reachable_hosts) > 0:
-                #upgrade_failed, unrecovered, connection_error, file_missing = multi_upgrade(reachable_hosts, user, password)
+                upgrade_failed, unrecovered, connection_error, file_missing = multi_upgrade(reachable_hosts, user, password)
                 pass
     if options.rollback:
         if options.filename:
@@ -635,7 +669,7 @@ def main():
         else:
             reachable_hosts, unreachable_hosts = multi_ping(options.device.split())
             if len(reachable_hosts) > 0:
-                #upgrade_failed, unrecovered, connection_error, file_missing = multi_rollback(reachable_hosts, user, password)
+                upgrade_failed, unrecovered, connection_error, file_missing = multi_rollback(reachable_hosts, user, password)
                 pass
     if options.upload:
         if options.filename:
