@@ -1,0 +1,33 @@
+Username:cisco
+Enter user password: 
+Testing reachability for host vodams_2_920_01
+Testing reachability for host vodams_11_920_01
+Testing reachability for host vodams_12_920_01
+Testing reachability for host vodams_13_920_01
+Processing HOST: vodams_11_920_01
+Processing HOST: vodams_12_920_01
+Processing HOST: vodams_13_920_01
+Processing HOST: vodams_2_920_01
+Image files are missing on vodams_11_920_01
+Image files are missing on vodams_13_920_01
+Image files are missing on vodams_12_920_01
+Upgrading ROMMON... please wait
+Device will go down in 1 minute, then pausing for 25 minutes for vodams_2_920_01 to reload
+Checking device vodams_2_920_01
+Waiting for vodams_2_920_01 to respond for 2 more minutes
+Checking device vodams_2_920_01
+Processing HOST: vodams_2_920_01
+Testing reachability for host vodams_1_920_01
+Testing reachability for host vodams_15_920_01
+Testing reachability for host vodams_999_920_01
+ping: vodams_15_920_01: Temporary failure in name resolution
+ping: vodams_999_920_01: Temporary failure in name resolution
+vodams_15_920_01 is unreachable and wont be processed further
+vodams_999_920_01 is unreachable and wont be processed further
+vodams_1_920_01 is unreachable and wont be processed further
+Testing reachability for host vodams_14_920_01
+Processing HOST: vodams_14_920_01
+Image files are missing on vodams_14_920_01
+The following hosts could not be reached: ['vodams_15_920_01', 'vodams_999_920_01', 'vodams_1_920_01']
+Devices not in the right code version:['vodams_2_920_01']
+Image files are missing on:['vodams_11_920_01', 'vodams_13_920_01', 'vodams_12_920_01', 'vodams_14_920_01']
