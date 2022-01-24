@@ -31,3 +31,40 @@ Image files are missing on vodams_14_920_01
 The following hosts could not be reached: ['vodams_15_920_01', 'vodams_999_920_01', 'vodams_1_920_01']
 Devices not in the right code version:['vodams_2_920_01']
 Image files are missing on:['vodams_11_920_01', 'vodams_13_920_01', 'vodams_12_920_01', 'vodams_14_920_01']
+
+Username:cisco
+Enter user password: 
+Testing reachability for host vodams_11_920_01
+
+Testing reachability for host vodams_1_920_01
+
+Testing reachability for host vodams_2_920_01
+
+Testing reachability for host vodams_14_920_01
+
+Processing HOST: vodams_11_920_01
+Processing HOST: vodams_14_920_01
+Processing HOST: vodams_2_920_01
+Processing HOST: vodams_1_920_01
+Authentication Error on host: vodams_2_920_01
+Testing reachability for host vodams_12_920_01
+
+Testing reachability for host vodams_13_920_01
+
+Testing reachability for host vodams_999_920_01
+
+ping: vodams_999_920_01: Temporary failure in name resolution
+vodams_999_920_01 is unreachable and wont be processed further
+Processing HOST: vodams_13_920_01
+Processing HOST: vodams_12_920_01
+Failed to connect on the following hosts: ['vodams_2_920_01']
+The following hosts could not be reached: ['vodams_999_920_01']
+gns3@gns3:~/PycharmProjects/pythonProject$ ls -l PRE*
+-rw-r--r-- 1 gns3 gns3  31702 Dec 29 16:47 PRE_10.0.0.13.txt
+-rw-r--r-- 1 gns3 gns3 144926 Dec 29 14:17 PRE_10.0.0.1.txt
+-rw-r--r-- 1 gns3 gns3 155940 Dec 29 14:18 PRE_10.0.0.2.txt
+-rw-rw-r-- 1 gns3 gns3  63073 Jan 24 15:42 PRE_vodams_11_920_01.txt
+-rw-rw-r-- 1 gns3 gns3  31632 Jan 24 15:42 PRE_vodams_12_920_01.txt
+-rw-rw-r-- 1 gns3 gns3  31630 Jan 24 15:42 PRE_vodams_13_920_01.txt
+-rw-rw-r-- 1 gns3 gns3  63074 Jan 24 15:42 PRE_vodams_14_920_01.txt
+-rw-rw-r-- 1 gns3 gns3  58385 Jan 24 15:42 PRE_vodams_1_920_01.txt
