@@ -203,8 +203,10 @@ def upgrade(user, password, host, failed_hosts):
         failed_hosts.put({host: 'FileMissing'})
         return None
 
-    print ('Upgrading ROMMON... please wait')
-    execute_command('upgrade rom-monitor filename bootflash:' + config.rommon_binary +' all\n', channel)
+    if config.rommon_binary != '':
+        print (host + 'Upgrading ROMMON... please wait')
+        execute_command('upgrade rom-monitor filename bootflash:' + config.rommon_binary +' all\n', channel)
+
     execute_command('conf t\n', channel)
     for boot in re.findall(r'boot system bootflash:.*', run_output):
         execute_command('no ' + boot + '\n', channel)
