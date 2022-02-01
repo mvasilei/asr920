@@ -1,6 +1,6 @@
 #! /usr/bin/env python2.7
 import time, signal, sys, subprocess, datetime, getpass, paramiko, os, re
-import hashlib
+import hashlib, config
 import multiprocessing as mp
 from optparse import OptionParser
 from itertools import izip_longest
@@ -194,21 +194,21 @@ def upgrade(user, password, host, failed_hosts):
         failed_hosts.put({host: 'Connection'})
         return None
     run_output = execute_command('sho run | i boot system bootflash\n', channel)
-    if 'Error' in execute_command('dir bootflash:asr920igp-15_6_43r_s_rommon.pkg\n', channel):
+    if 'Error' in execute_command('dir bootflash:' + config.rommon_binary + '\n', channel):
         print ('Image files are missing on ' + host)
         failed_hosts.put({host: 'FileMissing'})
         return None
-    if 'Error' in execute_command('dir asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel):
+    if 'Error' in execute_command('dir bootflash:' + config.ios_binary + '\n', channel):
         print ('Image files are missing on ' + host)
         failed_hosts.put({host: 'FileMissing'})
         return None
 
     print ('Upgrading ROMMON... please wait')
-    execute_command('upgrade rom-monitor filename bootflash:asr920igp-15_6_43r_s_rommon.pkg all\n', channel)
+    execute_command('upgrade rom-monitor filename bootflash:' + config.rommon_binary +' all\n', channel)
     execute_command('conf t\n', channel)
     for boot in re.findall(r'boot system bootflash:.*', run_output):
         execute_command('no ' + boot + '\n', channel)
-    execute_command('boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
+    execute_command('boot system bootflash:' + config.ios_binary + '\n', channel)
     execute_command('end\n', channel)
     execute_command('copy run start\n\n', channel)
     execute_command('reload in 1 reason Software upgrade\n\n', channel)
@@ -219,10 +219,9 @@ def upgrade(user, password, host, failed_hosts):
         print(host + ' didn''t recover for over 25 minutes, aborting process')
         failed_hosts.put({host: 'notup'})
     else:
-        user, password = get_user_password() #remove
         channel, client = connection_establishment(user, password, host)
         out = execute_command('show version\n', channel)
-        if '17.03.03' in out:
+        if config.version in out:
             print(host + ' host upgraded successfully')
             failed_hosts.put({host: 'success'})
             print('Configuring ' + host + ' post upgrade')
@@ -290,7 +289,6 @@ def progress(filename, size, sent):
 def open_scp_channel(host, user, password):
      failed = []
      try:
-          user, password = get_user_password() #remove
           client = paramiko.SSHClient()
           client.load_system_host_keys()
           client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -327,7 +325,6 @@ def file_upload(host, user, password, failed):
         failed.put({host: 'EmptyDir'})
         return None
 
-    user, password = get_user_password() #remove
     sshchannel, sshclient = connection_establishment(user, password, host)
 
     if sshchannel == None:
@@ -351,7 +348,6 @@ def file_upload(host, user, password, failed):
     connection_teardown(sshclient)
 
     for file in file_list:
-         user, password = get_user_password()
          client, fc = open_scp_channel(host, user, password)
 
          failed_connection.extend(fc)
@@ -361,7 +357,6 @@ def file_upload(host, user, password, failed):
               scp_client.put(file, 'bootflash:/' + sort_file)
               scp_client.close
 
-              user, password = get_user_password() #remove
               sshchannel, sshclient = connection_establishment(user, password, host)
               out = execute_command('verify /md5 bootflash:/' + sort_file + '\n', sshchannel)
               connection_teardown(sshclient)
@@ -409,14 +404,14 @@ def rollback(user, password, host, failed_hosts):
     if channel == None:
         failed_hosts.put({host: 'Connection'})
         return None
-    if 'Error' in execute_command('dir asr920igp-universalk9.V169_1A_ES04.SPA.bin\n', channel):
+    if 'Error' in execute_command('dir bootflash:' + config.rollback_binary + '\n', channel):
         print ('Image files are missing on ' + host)
         failed_hosts.put({host: 'FileMissing'})
         return None
 
     execute_command('conf t\n', channel)
-    execute_command('no boot system bootflash:asr920igp-universalk9_npe.17.03.03.SPA.bin\n', channel)
-    execute_command('boot system bootflash:asr920igp-universalk9.V169_1A_ES04.SPA.bin\n', channel)
+    execute_command('no boot system bootflash:' + config.ios_binary + '\n', channel)
+    execute_command('boot system bootflash:' + config.rollback_binary +'\n', channel)
     execute_command('end\n\n', channel)
     execute_command('copy run start\n\n', channel)
     execute_command('reload in 1 reason Software downgrade\n\n', channel)
@@ -428,10 +423,9 @@ def rollback(user, password, host, failed_hosts):
         print(host + ' didn''t recover for over 25 minutes, aborting process')
         failed_hosts.put({host: 'notup'})
     else:
-        user, password = get_user_password() #remove
         channel, client = connection_establishment(user, password, host)
         out = execute_command('show version\n', channel)
-        if 'V169_1A_ES04' in out:
+        if config.rollback_version in out:
             print(host + ' host rollbacked successfully')
             failed_hosts.put({host: 'success'})
         else:
@@ -639,13 +633,13 @@ def main():
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                #unreachable, upgrade_failed, unrecovered, connection_error, file_missing = reboot_proceed(user, password,
-                #                                                                           unreachable,
-                #                                                                           upgrade_failed,
-                #                                                                           unrecovered,
-                #                                                                           connection_error,
-                #                                                                           file_missing,
-                #                                                                           'upgrade')
+                unreachable, upgrade_failed, unrecovered, connection_error, file_missing = reboot_proceed(user, password,
+                                                                                           unreachable,
+                                                                                           upgrade_failed,
+                                                                                           unrecovered,
+                                                                                           connection_error,
+                                                                                           file_missing,
+                                                                                           'upgrade')
             except IOError as e:
                 print(e)
         else:
@@ -657,13 +651,13 @@ def main():
         if options.filename:
             try:
                 reboot_sequence(options.filename)
-                #unreachable, upgrade_failed, unrecovered,connection_error, file_missing = reboot_proceed(user, password,
-                #                                                                           unreachable,
-                #                                                                           upgrade_failed,
-                #                                                                           unrecovered,
-                #                                                                           connection_error,
-                #                                                                           file_missing,
-                #                                                                          'rollback')
+                unreachable, upgrade_failed, unrecovered,connection_error, file_missing = reboot_proceed(user, password,
+                                                                                           unreachable,
+                                                                                           upgrade_failed,
+                                                                                           unrecovered,
+                                                                                           connection_error,
+                                                                                           file_missing,
+                                                                                          'rollback')
             except IOError as e:
                 print(e)
         else:
