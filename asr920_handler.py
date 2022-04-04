@@ -51,7 +51,7 @@ def execute_command(command, channel):
             data = channel.recv(1000)
             cbuffer.append(data)
 
-        time.sleep(0.5)
+        time.sleep(0.02)
         data_no_trails = data.strip()
 
         if len(data_no_trails) > 0: #and
@@ -72,6 +72,8 @@ def multi_send_command(hosts_list, check_type, user, password):
     pool = []
     connection_error = []
     result_queue = mp.Queue()
+
+    print('### '+str(datetime.datetime.now())+' ###')
 
     for host in hosts_list:
         pool.append(
@@ -145,8 +147,10 @@ def multi_ping(hosts_list):
     result_queue = mp.Queue()
     processed_hosts = []
 
+    print('### '+str(datetime.datetime.now())+' ###')
+
     for host in hosts_list:
-        if host == '':
+        if host == '' or host == None:
             continue
         elif '_920_' not in host:
             print(host + ' not a valid host...skipping')
@@ -203,10 +207,8 @@ def upgrade(user, password, host, failed_hosts):
         failed_hosts.put({host: 'FileMissing'})
         return None
 
-    if config.rommon_binary != '':
-        print (host + 'Upgrading ROMMON... please wait')
-        execute_command('upgrade rom-monitor filename bootflash:' + config.rommon_binary +' all\n', channel)
-
+    print ('Upgrading ROMMON... please wait')
+    execute_command('upgrade rom-monitor filename bootflash:' + config.rommon_binary +' all\n', channel)
     execute_command('conf t\n', channel)
     for boot in re.findall(r'boot system bootflash:.*', run_output):
         execute_command('no ' + boot + '\n', channel)
@@ -226,31 +228,11 @@ def upgrade(user, password, host, failed_hosts):
         if config.version in out:
             print(host + ' host upgraded successfully')
             failed_hosts.put({host: 'success'})
-            print('Configuring ' + host + ' post upgrade')
-            execute_command('conf t\n', channel)
-            execute_command('snmp-server view q iso included\n', channel)
-            execute_command('snmp-server view q ciscoCefMIB excluded\n', channel)
-            execute_command('snmp-server view IVView iso included\n', channel)
-            execute_command('snmp-server view IVView ciscoCefMIB excluded\n', channel)
-            execute_command('snmp-server view IVUserView iso included\n', channel)
-            execute_command('snmp-server view IVUserView ciscoCefMIB excluded\n', channel)
-            execute_command('snmp-server view SMARTSView iso included\n', channel)
-            execute_command('snmp-server view SMARTSView ciscoCefMIB excluded\n', channel)
-            execute_command('snmp-server view ScriptView iso included\n', channel)
-            execute_command('snmp-server view ScriptView ciscoCefMIB excluded\n', channel)
-            execute_command('no logging host 212.137.2.50 discriminator FAN+TEMP\n', channel)
-            execute_command('no logging host 212.137.2.20 discriminator FAN+TEMP\n', channel)
-            execute_command('no logging host 195.27.67.93 discriminator FAN+TEMP\n', channel)
-            execute_command('no logging host 194.221.227.93 discriminator FAN+TEMP\n', channel)
-            execute_command(
-                'logging discriminator FAN+TEMP msg-body drops (Speed: [0-6]|Board.Temperature: [1-4]|compliance violation)\n',
-                channel)
-            execute_command('logging host 212.137.2.50 discriminator FAN+TEMP\n', channel)
-            execute_command('logging host 212.137.2.20 discriminator FAN+TEMP\n', channel)
-            execute_command('logging host 195.27.67.93 discriminator FAN+TEMP\n', channel)
-            execute_command('logging host 194.221.227.93 discriminator FAN+TEMP\n', channel)
-            execute_command('end\n', channel)
-            execute_command('copy run start\n\n', channel)
+            if len(config.post_upgrade_commands) > 0:
+               print('Configuring ' + host + ' post upgrade')
+               execute_command('conf t\n', channel)
+               for command in config.post_upgrade_commands:
+                   execute_command(command, channel)
         else:
             failed_hosts.put({host: 'version'})
 
@@ -261,6 +243,8 @@ def multi_upgrade(hosts_list, user, password):
     connection_error = []
     file_missing = []
     failed_queue = mp.Queue()
+
+    print('### '+str(datetime.datetime.now())+' ###')
 
     for host in hosts_list:
         pool.append(mp.Process(target=upgrade, args=(user, password, host, failed_queue)))
@@ -380,6 +364,8 @@ def multi_file_upload(hosts_list, user, password):
     md5_error = []
     mpQueue = mp.Queue()
 
+    print('### '+str(datetime.datetime.now())+' ###')
+
     #Create pool of processes to run
     for host in hosts_list:
         pool.append(mp.Process(target=file_upload, args=(host, user, password, mpQueue)))
@@ -440,6 +426,8 @@ def multi_rollback(hosts_list, user, password):
     connection_error = []
     file_missing = []
     failed_queue = mp.Queue()
+
+    print('### '+str(datetime.datetime.now())+' ###')
 
     for host in hosts_list:
         pool.append(mp.Process(target=rollback, args=(user, password, host, failed_queue)))
@@ -605,7 +593,7 @@ def main():
         if options.filename:
             try:
                 with open(options.filename, 'r') as infile:
-                    for lines in grouper(infile, mp.cpu_count()/4, ''):
+                    for lines in grouper(infile, 3): #mp.cpu_count()/4, ''):
                         reachable_hosts, unreachable_hosts = multi_ping(lines)
                         unreachable.extend(unreachable_hosts)
                         if len(reachable_hosts) > 0:
